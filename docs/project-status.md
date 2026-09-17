@@ -2260,7 +2260,9 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   (Amacha terms forbid redistribution, so not in the public repo);
   `VideoService.onModuleInit` syncs them to `uploads/music-lib` and
   `musiclib` resolves its assets dir from `__dirname`/`MUSIC_ASSETS_DIR`.
-  Upload tool: `apps/api/scripts/upload-music-library.mjs`. Still open: safe production
+  Upload tool: `apps/api/scripts/upload-music-library.mjs`. The 6 synth
+  tracks are hidden from the catalog whenever a real library is present
+  (still resolvable by id for old jobs and e2e). Still open: safe production
   defaults for render concurrency in code, FAILED-marking of orphaned
   PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
   long" state.

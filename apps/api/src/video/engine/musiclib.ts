@@ -191,6 +191,11 @@ export function musicCatalog(): {
       if (tracks.length) themes.push({ ...th, tracks });
     }
   }
+  // 6 bài synth sóng sine chỉ là DỰ PHÒNG khi máy không có thư viện thật
+  // (dev chưa có R2/assets/music). Có nhạc thật thì ẩn chúng khỏi danh sách —
+  // nghe "vô vị" cạnh nhạc thật (Đạt, 2026-09-18) — nhưng id vẫn resolve được
+  // (isLibraryTrack/ensureTrack) để job cũ và e2e dùng 'canon'/'twinkle' không hỏng.
+  if (themes.length > 0) return { themes };
   themes.push({
     id: 'synth',
     emoji: '🎹',
