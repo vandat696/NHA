@@ -66,6 +66,16 @@ Xong thì ghi lại hai URL Render cấp (dạng `https://nha-api.onrender.com`)
   tăng theo số cảnh. x264 4 luồng (`VIDEO_FFMPEG_THREADS`). Không cần biến
   thêm cho việc này.
 
+- **Thư viện nhạc nền nằm trên R2, không trong repo** (từ 2026-09-18). 15 bài
+  không lời của 甘茶の音楽工房 (thương mại OK, không cần ghi công, nhưng điều
+  khoản cấm 2次配布 nên không commit vào repo public) + `library.json` (chủ
+  đề, BPM đo sẵn) ở `r2://<R2_BUCKET>/music-library/`. `VideoService` tải về
+  `uploads/music-lib` khi khởi động (~40MB, vài giây; log
+  `thư viện nhạc: 15 track sẵn sàng`), trước đó catalog chỉ có 6 bài synth.
+  Thêm/đổi bài: chuẩn bị thư mục có `library.json` + `*.m4a` rồi chạy
+  `node apps/api/scripts/upload-music-library.mjs <thư-mục>` với `.env` có
+  R2\_\*. Máy dev không cần R2: đặt thư viện vào `apps/api/assets/music/`.
+
 Kiểm tra: `GET https://<api>/api` phải trả 200, và log khởi động phải có dòng
 `Using Cloudflare R2 bucket …` — không có nghĩa là nó đang ghi vào đĩa tạm của
 Render và ảnh sẽ mất sau mỗi lần deploy.

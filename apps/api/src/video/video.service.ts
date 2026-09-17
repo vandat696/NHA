@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  type OnModuleInit,
 } from '@nestjs/common';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -48,6 +49,7 @@ import {
   ensureTrack,
   isLibraryTrack,
   musicCatalog,
+  reloadExternalLibrary,
   trackBpm,
 } from './engine/musiclib';
 import type { Aspect, IntroTemplateId, Palette, Scene } from './engine/types';
@@ -123,8 +125,16 @@ const MAX_CONCURRENT_RENDERS = Math.max(
 /** `stage` của một job đang đợi tới lượt — app hiện "đang chờ" thay vì 0% đứng im. */
 const STAGE_QUEUED = 'queued';
 
+/**
+ * Thư viện nhạc thật nằm trên R2 dưới prefix này (đẩy lên bằng
+ * scripts/upload-music-library.mjs). Nhạc 甘茶の音楽工房 cho dùng thương mại
+ * không cần ghi công nhưng cấm 2次配布, nên KHÔNG commit vào repo public; Render
+ * lại không có đĩa bền → tải về đĩa tạm mỗi lần khởi động (~40MB, vài giây).
+ */
+const MUSIC_LIBRARY_PREFIX = 'music-library/';
+
 @Injectable()
-export class VideoService {
+export class VideoService implements OnModuleInit {
   private readonly logger = new Logger(VideoService.name);
 
   /**
@@ -141,6 +151,51 @@ export class VideoService {
     private readonly ai: AiClientService,
     private readonly context: AiContextService,
   ) {}
+
+  onModuleInit(): void {
+    // Không chờ: API lên ngay, catalog hiện thêm nhạc thật khi tải xong.
+    void this.syncMusicLibrary().catch((err: unknown) =>
+      this.logger.warn(`không tải được thư viện nhạc từ R2: ${String(err)}`),
+    );
+  }
+
+  /**
+   * Tải library.json + các file nhạc từ R2 về uploads/music-lib rồi trỏ
+   * musiclib vào đó. Bỏ qua nếu bucket không có thư viện (máy dev dùng
+   * assets/music cục bộ, hoặc chưa ai đẩy lên). File đã có đúng kích cỡ thì
+   * không tải lại — restart giữa ngày không tốn băng thông.
+   */
+  private async syncMusicLibrary(): Promise<void> {
+    const libKey = `${MUSIC_LIBRARY_PREFIX}library.json`;
+    if (!(await this.storage.exists(libKey))) return;
+    const dir = path.join(process.cwd(), 'uploads', 'music-lib');
+    fs.mkdirSync(dir, { recursive: true });
+    const lib = JSON.parse(
+      (await this.storage.readAll(libKey)).toString('utf8'),
+    ) as { tracks: { id: string; file: string }[] };
+    let fetched = 0;
+    for (const t of lib.tracks) {
+      const key = `${MUSIC_LIBRARY_PREFIX}${t.file}`;
+      const dest = path.join(dir, t.file);
+      try {
+        const want = await this.storage.sizeOf(key);
+        if (fs.existsSync(dest) && fs.statSync(dest).size === want) continue;
+        fs.writeFileSync(dest, await this.storage.readAll(key));
+        fetched++;
+      } catch (err) {
+        this.logger.warn(`thư viện nhạc: bỏ qua ${t.file}: ${String(err)}`);
+      }
+    }
+    fs.writeFileSync(
+      path.join(dir, 'library.json'),
+      JSON.stringify(lib, null, 2),
+    );
+    process.env.MUSIC_ASSETS_DIR = dir;
+    reloadExternalLibrary();
+    this.logger.log(
+      `thư viện nhạc: ${lib.tracks.length} track sẵn sàng (${fetched} tải mới) từ R2`,
+    );
+  }
 
   musicLibrary(): ReturnType<typeof musicCatalog> {
     return musicCatalog();

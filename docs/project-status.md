@@ -2250,7 +2250,17 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   libass (`subtitles` filter with `fontsdir`, present in both builds),
   intro SVG text pointed at the same fonts via `FONTCONFIG_PATH`, and the
   service now warns when fonts are missing. Verified by replaying the
-  generated commands on the 7.0.2 Linux binary. Still open: safe production
+  generated commands on the 7.0.2 Linux binary. Fifth (2026-09-18): the
+  music picker on production only offered the 6 sine-wave synth tracks —
+  the real library (`assets/music`, 45 Amacha tracks) was gitignored, its
+  fetch script never landed in the repo, and `ASSETS_MUSIC` was cwd-based
+  (wrong on Render). Now 15 curated instrumental Amacha tracks (pop /
+  ほのぼの / おしゃれ, BPM measured with a new onset-autocorrelation
+  estimator, conf ≥ 2.5 else null) live in R2 under `music-library/`
+  (Amacha terms forbid redistribution, so not in the public repo);
+  `VideoService.onModuleInit` syncs them to `uploads/music-lib` and
+  `musiclib` resolves its assets dir from `__dirname`/`MUSIC_ASSETS_DIR`.
+  Upload tool: `apps/api/scripts/upload-music-library.mjs`. Still open: safe production
   defaults for render concurrency in code, FAILED-marking of orphaned
   PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
   long" state.

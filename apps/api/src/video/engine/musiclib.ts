@@ -89,8 +89,20 @@ type LibraryFile = {
   tracks: ExternalTrack[];
 };
 
-const ASSETS_MUSIC = () => path.join(process.cwd(), 'assets', 'music');
+// Thư mục chứa library.json + file nhạc. Mặc định là apps/api/assets/music tính
+// từ __dirname (KHÔNG từ cwd — trên Render startCommand chạy từ gốc repo).
+// MUSIC_ASSETS_DIR ghi đè: VideoService đặt nó khi tải thư viện từ R2 về đĩa
+// tạm lúc khởi động (nhạc Amacha không được phép commit vào repo public — điều
+// khoản cấm 2次配布 — nên nằm trong bucket riêng, xem docs/04-devops/deploy.md).
+const ASSETS_MUSIC = () =>
+  process.env.MUSIC_ASSETS_DIR ??
+  path.resolve(__dirname, '..', '..', '..', 'assets', 'music');
 let _lib: LibraryFile | null | undefined;
+
+/** Gọi sau khi thư viện trên đĩa thay đổi (tải xong từ R2) để đọc lại library.json */
+export function reloadExternalLibrary(): void {
+  _lib = undefined;
+}
 
 export function externalLibrary(): LibraryFile | null {
   if (_lib !== undefined) return _lib;
