@@ -57,11 +57,14 @@ Xong thì ghi lại hai URL Render cấp (dạng `https://nha-api.onrender.com`)
   `standard`.
 
   Riêng bước ghép cuối (stage `music`) từng cần **1.8GB cho một ffmpeg** trên
-  ffmpeg 7.0.2 Linux, đủ để OOM cả khi chỉ chạy một ffmpeg — ffmpeg giải mã cả
-  6 đoạn song song từ giây 0 và giữ frame của đoạn chưa tới lượt trong graph.
-  Từ 2026-09-18 engine tự xử: `-itsoffset` theo mốc timeline của từng đoạn,
-  decoder 1 luồng, x264 4 luồng (`VIDEO_FFMPEG_THREADS`, mặc định 4) → đo
-  1.06GB cùng graph. Không cần biến thêm cho việc này.
+  ffmpeg 7.0.2 Linux, đủ để OOM cả khi chỉ chạy một ffmpeg — một filter graph
+  gom cả 8 đoạn giải mã song song từ giây 0 và giữ frame của đoạn chưa tới lượt;
+  vặn luồng hay `-itsoffset` chỉ hạ được tới sàn ~1.0GB, vẫn chết trên Render.
+  Từ 2026-09-18 engine ghép **hai giai đoạn**: mỗi cảnh và mỗi chuyển cảnh là
+  một ffmpeg riêng chạm 1–2 đoạn, rồi nối bằng concat demuxer (video copy) +
+  trộn nhạc. Đo trên 7.0.2 Linux: từng lệnh 308–545MB, lệnh nối 29MB — không
+  tăng theo số cảnh. x264 4 luồng (`VIDEO_FFMPEG_THREADS`). Không cần biến
+  thêm cho việc này.
 
 Kiểm tra: `GET https://<api>/api` phải trả 200, và log khởi động phải có dòng
 `Using Cloudflare R2 bucket …` — không có nghĩa là nó đang ghi vào đĩa tạm của

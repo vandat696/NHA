@@ -2234,11 +2234,14 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   Third finding (2026-09-18): the final mix alone peaked at **1.8GB** on
   ffmpeg 7.0.2 Linux even with one ffmpeg — all segments start at pts 0,
   so the scheduler decodes every input from t=0 and parks the frames in the
-  graph; capping threads only made the queue longer (2.1GB). Fix in
-  `concatMemories`: `-itsoffset <segment start>` per input +
-  `setpts=PTS-STARTPTS`, decoder `-threads 1`, x264 `-threads 4`
-  (`VIDEO_FFMPEG_THREADS`), `-filter_complex_threads 2` → 1.06GB for the
-  same graph, identical output length. Still open: safe production
+  graph; capping threads only made the queue longer (2.1GB), and
+  `-itsoffset` + thread caps bottomed out at ~1.0GB — still OOM on Render
+  next to the Node process. Final fix: `concatMemories` is now
+  **two-stage** — one ffmpeg per scene body and per transition (1–2 inputs
+  each: 308–545MB measured on 7.0.2 Linux), then a concat-demuxer mux with
+  `-c:v copy` plus the music/voice graph (29MB). Peak no longer grows with
+  the scene count; same encode count, same 980-frame output. x264 threads
+  capped at 4 (`VIDEO_FFMPEG_THREADS`). Still open: safe production
   defaults for render concurrency in code, FAILED-marking of orphaned
   PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
   long" state.

@@ -1039,159 +1039,193 @@ async function concatMemories(opts: {
   voiceTracks?: VoiceTrack[];
 }): Promise<{ totalDur: number; transitions: string[] }> {
   const { segs, joins, W, H } = opts;
-  const parts: string[] = [];
+  const n = segs.length;
   const transitions: string[] = [];
-  // setsar=1 BẮT BUỘC: filter `concat` đòi SAR khớp tuyệt đối giữa các nhánh — segment cắt từ
-  // video gốc có thể mang SAR lẻ kiểu 4907:4906 (scale giữ tỉ lệ), còn color source là 1:1.
-  // setpts=PTS-STARTPTS: input được đưa vào với -itsoffset = mốc timeline của đoạn
-  // (xem phần args bên dưới) nên phải kéo về 0 trước khi vào xfade/concat.
-  segs.forEach((_, i) =>
-    parts.push(
-      `[${i}:v]setpts=PTS-STARTPTS,fps=${FPS},settb=AVTB,setsar=1,format=yuv420p[s${i}]`,
-    ),
+  const totalDur =
+    Math.round(segs.reduce((a, s) => a + s.durationS, 0) * 1000) / 1000;
+
+  // VÌ SAO GHÉP HAI GIAI ĐOẠN thay vì một filter graph gom cả video (sự cố
+  // 2026-09-17/18, Render 2GB OOM-kill ở stage 'music'):
+  // một graph 8 đầu vào 1080x1920 trên ffmpeg 7.0.2 Linux đỉnh 1.8GB, và sàn
+  // ~1.0GB dù ép luồng, -itsoffset hay bỏ hết hiệu ứng — 6 decoder + x264 +
+  // frame chờ trong graph cộng lại vượt mọi cách vặn tham số. Đo cùng máy:
+  //   · re-encode 1 đoạn (clip thân)      338MB
+  //   · xfade 2 đoạn (clip chuyển cảnh)   520MB
+  //   · concat demuxer + copy video + nhạc  29MB
+  // → mỗi process chỉ chạm 1-2 đoạn, đỉnh RAM ≤ ~520MB và KHÔNG tăng theo số
+  // cảnh. Số lần encode không đổi (mỗi frame thân/chuyển cảnh vẫn encode đúng
+  // một lần ở crf 19 như trước), nên chất lượng như cũ.
+  //
+  // Timeline giữ nguyên hợp đồng cũ: cảnh i chiếm [T_i, T_i + durationS_i];
+  // mối nối có hiệu ứng D chiếm [T_{i+1}, T_{i+1} + D] — lấy D giây ĐUÔI DƯ của
+  // file cảnh i (renderer đã render dư đúng extraTailFor) và D giây ĐẦU của cảnh
+  // i+1; phần thân cảnh i+1 vì thế bắt đầu từ giây D. totalDur = Σ durationS.
+  const work = path.join(
+    TMP_DIR(),
+    `mix_${crypto.randomBytes(5).toString('hex')}`,
   );
-
-  let uid = 0;
-  const lbl = (p: string) => `[${p}${uid++}]`;
-
-  // Đầu ra của `concat` KHÔNG mang frame rate (1/0). ffmpeg 6.1 (bản Windows của
-  // ffmpeg-static) bỏ qua, nhưng ffmpeg 7.0 (bản Linux cùng gói — Render) từ chối
-  // ngay khi chuỗi đó đi vào `xfade`: "The inputs needs to be a constant frame
-  // rate; current rate of 1/0 is invalid" → cả video 0 frame (sự cố 2026-09-17).
-  // Gắn lại CFR sau mỗi concat; với nguồn đã 30fps thì đây là no-op về nội dung.
-  const CFR = `,fps=${FPS},settb=AVTB`;
-
-  // Bất biến: chuỗi `prev` dài đúng T + extra(join sắp tới); T = ranh giới timeline hiện tại.
-  let prev = '[s0]';
-  let T = segs[0].durationS;
-  // Mốc timeline mà đoạn i bắt đầu được dùng — cho -itsoffset bên dưới.
-  const starts: number[] = [0];
-  for (let i = 1; i < segs.length; i++) {
-    const j = joins[i - 1];
-    const d = segs[i].durationS;
-    starts.push(T);
-    if (j.type === 'cut') {
-      const outL = lbl('c');
-      parts.push(`${prev}[s${i}]concat=n=2:v=1:a=0${CFR}${outL}`);
-      prev = outL;
-    } else if (j.type === 'counterslide') {
-      const D = j.dur;
-      const dir = j.dir ?? 1;
-      // Hiệu ứng chiếm [T, T+D]: đuôi dư của chuỗi cũ + đầu cảnh mới cùng trượt
-      const [pa, pb, na, nb] = [lbl('p'), lbl('p'), lbl('n'), lbl('n')];
-      const [Lmain, Ltail, Rhead, Rmain] = [
-        lbl('lm'),
-        lbl('lt'),
-        lbl('rh'),
-        lbl('rm'),
-      ];
-      parts.push(`${prev}split${pa}${pb}`);
-      parts.push(`${pa}trim=end=${T.toFixed(3)},setpts=PTS-STARTPTS${Lmain}`);
-      parts.push(`${pb}trim=start=${T.toFixed(3)},setpts=PTS-STARTPTS${Ltail}`);
-      parts.push(`[s${i}]split${na}${nb}`);
-      parts.push(`${na}trim=end=${D.toFixed(3)},setpts=PTS-STARTPTS${Rhead}`);
-      parts.push(`${nb}trim=start=${D.toFixed(3)},setpts=PTS-STARTPTS${Rmain}`);
-      const Tclip = counterSlideGraph(parts, Ltail, Rhead, D, dir, W, H, lbl);
-      const [half, outL] = [lbl('cs'), lbl('cs')];
-      parts.push(`${Lmain}${Tclip}concat=n=2:v=1:a=0${half}`);
-      parts.push(`${half}${Rmain}concat=n=2:v=1:a=0${CFR}${outL}`);
-      prev = outL;
-      transitions.push(`counterslide(${dir > 0 ? 'phải' : 'trái'})`);
-      T += d;
-      continue;
-    } else {
-      // fade / fadewhite / hblur — xfade bắt đầu ĐÚNG tại ranh giới nhịp T
-      const outL = lbl('x');
-      parts.push(
-        `${prev}[s${i}]xfade=transition=${j.type}:duration=${j.dur}:offset=${T.toFixed(3)}${outL}`,
-      );
-      prev = outL;
+  fs.mkdirSync(work, { recursive: true });
+  const clips: string[] = [];
+  const norm = `setpts=PTS-STARTPTS,fps=${FPS},settb=AVTB,setsar=1,format=yuv420p`;
+  try {
+    // ---------- giai đoạn 1: clip thân + clip chuyển cảnh ----------
+    for (let i = 0; i < n; i++) {
+      const jIn = i > 0 ? joins[i - 1] : undefined;
+      const jOut = i < n - 1 ? joins[i] : undefined;
+      // Phần đầu cảnh đã nằm trong clip chuyển cảnh đứng trước nó
+      const headUsed = jIn && jIn.type !== 'cut' ? jIn.dur : 0;
+      const bodyLen = segs[i].durationS - headUsed;
+      if (bodyLen >= 1 / FPS) {
+        const body = path.join(work, `b${String(i).padStart(3, '0')}.mp4`);
+        const vf = [norm];
+        if (i === 0) vf.push('fade=t=in:st=0:d=0.5');
+        if (i === n - 1)
+          vf.push(
+            `fade=t=out:st=${Math.max(0, bodyLen - 0.8).toFixed(3)}:d=0.8`,
+          );
+        await run(FFMPEG, [
+          '-y',
+          '-threads',
+          '1',
+          ...(headUsed > 0 ? ['-ss', headUsed.toFixed(3)] : []),
+          '-t',
+          bodyLen.toFixed(3),
+          '-i',
+          segs[i].file,
+          '-vf',
+          vf.join(','),
+          '-t',
+          bodyLen.toFixed(3),
+          ...FINAL_ENC,
+          body,
+        ]);
+        clips.push(body);
+      }
+      if (!jOut) continue;
+      if (jOut.type === 'cut') {
+        transitions.push('cut');
+        continue;
+      }
+      const D = jOut.dur;
+      const parts = [`[0:v]${norm}[a]`, `[1:v]${norm}[b]`];
+      let out: string;
+      if (jOut.type === 'counterslide') {
+        const dir = jOut.dir ?? 1;
+        let uid = 0;
+        const lbl = (p: string) => `[${p}${uid++}]`;
+        out = counterSlideGraph(parts, '[a]', '[b]', D, dir, W, H, lbl);
+        transitions.push(`counterslide(${dir > 0 ? 'phải' : 'trái'})`);
+      } else {
+        // fade / fadewhite / hblur — xfade bắt đầu ngay tại 0 vì hai đầu vào
+        // đã được cắt đúng cửa sổ chồng lấn D giây
+        parts.push(
+          `[a][b]xfade=transition=${jOut.type}:duration=${D}:offset=0[x]`,
+        );
+        out = '[x]';
+        transitions.push(jOut.type);
+      }
+      const tr = path.join(work, `t${String(i).padStart(3, '0')}.mp4`);
+      await run(FFMPEG, [
+        '-y',
+        '-threads',
+        '1',
+        '-ss',
+        segs[i].durationS.toFixed(3),
+        '-t',
+        D.toFixed(3),
+        '-i',
+        segs[i].file,
+        '-threads',
+        '1',
+        '-t',
+        D.toFixed(3),
+        '-i',
+        segs[i + 1].file,
+        '-filter_complex_threads',
+        '2',
+        '-filter_complex',
+        parts.join(';'),
+        '-map',
+        out,
+        '-t',
+        D.toFixed(3),
+        ...FINAL_ENC,
+        tr,
+      ]);
+      clips.push(tr);
     }
-    transitions.push(j.type === 'cut' ? 'cut' : j.type);
-    T += d;
-  }
-  const totalDur = Math.round(T * 1000) / 1000;
-  parts.push(
-    `${prev}fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalDur - 0.8).toFixed(2)}:d=0.8[v]`,
-  );
 
-  // RAM của bước ghép (đo 2026-09-17, ffmpeg 7.0.2 Linux, video 6 đoạn 1080x1920):
-  // mặc định 1.8GB → Render 2GB OOM-kill ngay ở stage 'music'. Nguyên nhân không
-  // phải hiệu ứng: ffmpeg đọc và giải mã CẢ 6 đoạn song song từ giây 0 (pts đều
-  // bắt đầu ở 0 nên đoạn nào cũng "cũ nhất"), frame của đoạn chưa tới lượt nằm
-  // chờ trong graph — ép luồng chỉ làm encode chậm hơn và hàng đợi dài hơn (2.1GB).
-  //   · -itsoffset = mốc timeline thật của đoạn → scheduler chỉ kéo đoạn i khi
-  //     timeline chạm tới nó (setpts=PTS-STARTPTS ở đầu chuỗi kéo pts về 0 lại).
-  //   · -threads 1 cho decoder: mỗi decoder h264 đa luồng giữ ~60MB frame pool,
-  //     6 đoạn = ~370MB; giải mã 1 luồng vẫn nhanh hơn encode nhiều lần.
-  // Cùng graph: 1.8GB → 1.3GB với mốc xấp xỉ; mốc chính xác bên dưới.
-  const args = ['-y'];
-  segs.forEach((s, i) => {
-    if (starts[i] > 0) args.push('-itsoffset', starts[i].toFixed(3));
-    args.push('-threads', '1', '-i', s.file);
-  });
-
-  // ---------- audio ----------
-  // Thiết kế màn 29: "The music fades under the voices in your clips." — tiếng nói trong
-  // clip gốc GIỮ NGUYÊN, đặt đúng chỗ trên timeline (adelay), nhạc bị nén xuống bằng
-  // sidechaincompress mỗi khi có tiếng nói, rồi trộn lại (amix normalize=0 để không tự chia âm lượng).
-  const voices = opts.voiceTracks ?? [];
-  const musicIdx = opts.musicPath ? segs.length : -1;
-  const firstVoiceIdx = segs.length + (opts.musicPath ? 1 : 0);
-
-  const audioParts: string[] = [];
-  let audioOut: string | null = null;
-  if (voices.length) {
-    voices.forEach((v, k) => {
-      const delayMs = Math.max(0, Math.round(v.startS * 1000));
-      audioParts.push(
-        `[${firstVoiceIdx + k}:a]aresample=44100,volume=${CLIP_AUDIO_GAIN},adelay=${delayMs}|${delayMs},apad[vc${k}]`,
-      );
-    });
-    const vAll = voices.map((_, k) => `[vc${k}]`).join('');
-    audioParts.push(
-      voices.length > 1
-        ? `${vAll}amix=inputs=${voices.length}:normalize=0[voice]`
-        : `${vAll}anull[voice]`,
+    // ---------- giai đoạn 2: nối (copy video) + nhạc ----------
+    const list = path.join(work, 'list.txt');
+    fs.writeFileSync(
+      list,
+      clips
+        .map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`)
+        .join('\n') + '\n',
     );
-    if (opts.musicPath) {
-      audioParts.push(`[voice]asplit[voiceMix][voiceKey]`);
+    const args = ['-y', '-f', 'concat', '-safe', '0', '-i', list];
+
+    // Thiết kế màn 29: "The music fades under the voices in your clips." — tiếng nói trong
+    // clip gốc GIỮ NGUYÊN, đặt đúng chỗ trên timeline (adelay), nhạc bị nén xuống bằng
+    // sidechaincompress mỗi khi có tiếng nói, rồi trộn lại (amix normalize=0 để không tự chia âm lượng).
+    const voices = opts.voiceTracks ?? [];
+    const musicIdx = opts.musicPath ? 1 : -1;
+    const firstVoiceIdx = 1 + (opts.musicPath ? 1 : 0);
+
+    const audioParts: string[] = [];
+    let audioOut: string | null = null;
+    if (voices.length) {
+      voices.forEach((v, k) => {
+        const delayMs = Math.max(0, Math.round(v.startS * 1000));
+        audioParts.push(
+          `[${firstVoiceIdx + k}:a]aresample=44100,volume=${CLIP_AUDIO_GAIN},adelay=${delayMs}|${delayMs},apad[vc${k}]`,
+        );
+      });
+      const vAll = voices.map((_, k) => `[vc${k}]`).join('');
       audioParts.push(
-        `[${musicIdx}:a]aresample=44100,volume=1.0,afade=t=in:st=0:d=0.8,afade=t=out:st=${Math.max(0, totalDur - 2.5).toFixed(2)}:d=2.5[mus]`,
+        voices.length > 1
+          ? `${vAll}amix=inputs=${voices.length}:normalize=0[voice]`
+          : `${vAll}anull[voice]`,
       );
-      // Nhạc cúi xuống dưới tiếng nói: threshold thấp + ratio mạnh + release dài
-      // cho tự nhiên. Ngưỡng phải theo mức tiếng clip ĐÃ GIẢM (0.2), nếu giữ
-      // 0.03 như khi tiếng còn 100% thì gần như không bao giờ chạm ngưỡng nữa.
+      if (opts.musicPath) {
+        audioParts.push(`[voice]asplit[voiceMix][voiceKey]`);
+        audioParts.push(
+          `[${musicIdx}:a]aresample=44100,volume=1.0,afade=t=in:st=0:d=0.8,afade=t=out:st=${Math.max(0, totalDur - 2.5).toFixed(2)}:d=2.5[mus]`,
+        );
+        // Nhạc cúi xuống dưới tiếng nói: threshold thấp + ratio mạnh + release dài
+        // cho tự nhiên. Ngưỡng phải theo mức tiếng clip ĐÃ GIẢM (0.2), nếu giữ
+        // 0.03 như khi tiếng còn 100% thì gần như không bao giờ chạm ngưỡng nữa.
+        audioParts.push(
+          `[mus][voiceKey]sidechaincompress=threshold=${(0.03 * CLIP_AUDIO_GAIN).toFixed(4)}:ratio=12:attack=80:release=600[duck]`,
+        );
+        audioParts.push(`[duck][voiceMix]amix=inputs=2:normalize=0[aout]`);
+      } else {
+        audioParts.push(`[voice]anull[aout]`);
+      }
+      audioOut = '[aout]';
+    } else if (opts.musicPath) {
       audioParts.push(
-        `[mus][voiceKey]sidechaincompress=threshold=${(0.03 * CLIP_AUDIO_GAIN).toFixed(4)}:ratio=12:attack=80:release=600[duck]`,
+        `[${musicIdx}:a]volume=1.0,afade=t=in:st=0:d=0.8,afade=t=out:st=${Math.max(0, totalDur - 2.5).toFixed(2)}:d=2.5[aout]`,
       );
-      audioParts.push(`[duck][voiceMix]amix=inputs=2:normalize=0[aout]`);
-    } else {
-      audioParts.push(`[voice]anull[aout]`);
+      audioOut = '[aout]';
     }
-    audioOut = '[aout]';
-  } else if (opts.musicPath) {
-    audioParts.push(
-      `[${musicIdx}:a]volume=1.0,afade=t=in:st=0:d=0.8,afade=t=out:st=${Math.max(0, totalDur - 2.5).toFixed(2)}:d=2.5[aout]`,
-    );
-    audioOut = '[aout]';
-  }
 
-  if (opts.musicPath) args.push('-stream_loop', '-1', '-i', opts.musicPath);
-  for (const v of voices) args.push('-i', v.file);
-  args.push(
-    '-filter_complex_threads',
-    '2',
-    '-filter_complex',
-    [...parts, ...audioParts].join(';'),
-    '-map',
-    '[v]',
-  );
-  if (audioOut) {
-    args.push('-map', audioOut, '-c:a', 'aac', '-b:a', '128k');
+    if (opts.musicPath) args.push('-stream_loop', '-1', '-i', opts.musicPath);
+    for (const v of voices) args.push('-i', v.file);
+    if (audioParts.length) args.push('-filter_complex', audioParts.join(';'));
+    args.push('-map', '0:v', '-c:v', 'copy');
+    if (audioOut) args.push('-map', audioOut, '-c:a', 'aac', '-b:a', '128k');
+    args.push(
+      '-t',
+      totalDur.toFixed(2),
+      '-movflags',
+      '+faststart',
+      opts.outAbs,
+    );
+    await run(FFMPEG, args);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
   }
-  args.push('-t', totalDur.toFixed(2), ...FINAL_ENC, opts.outAbs);
-  await run(FFMPEG, args);
   return { totalDur, transitions };
 }
 
