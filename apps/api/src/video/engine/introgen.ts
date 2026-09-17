@@ -20,6 +20,7 @@ import sharp from 'sharp';
 import { FFMPEG, run } from './exec';
 import {
   dims,
+  FFMPEG_THREADS,
   FPS,
   segCacheFile,
   tmpDir,
@@ -99,6 +100,8 @@ const ENC = [
   '20',
   '-pix_fmt',
   'yuv420p',
+  '-threads',
+  FFMPEG_THREADS,
   '-an',
 ];
 const FONT_STACK = 'Yu Gothic, Meiryo, Segoe UI, sans-serif';

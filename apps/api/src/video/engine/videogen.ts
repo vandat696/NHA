@@ -337,6 +337,15 @@ function holdStatic(frames: number): string {
 
 // crf 18 cho SEGMENT (bị encode lần 2 khi ghép — chất lượng nguồn quyết định ảnh có mờ hay không),
 // crf 19 cho file cuối. Preset giữ veryfast để cân bằng thời gian render.
+//
+// Số luồng x264/filter: mặc định ffmpeg lấy theo số nhân máy VẬT LÝ — trong
+// container Render đó là host hàng chục nhân chứ không phải 1 CPU của gói, mỗi
+// luồng x264 lại giữ thêm frame 1080x1920. Đo 2026-09-17 (ffmpeg 7.0.2 Linux,
+// bước ghép 6 đoạn): mặc định 8 nhân 1279MB → 4 luồng 1089MB. Chỉnh được qua
+// VIDEO_FFMPEG_THREADS khi máy dev muốn nhanh hơn.
+export const FFMPEG_THREADS = String(
+  Math.max(1, Number(process.env.VIDEO_FFMPEG_THREADS ?? 4) || 4),
+);
 const ENC = [
   '-r',
   String(FPS),
@@ -348,6 +357,8 @@ const ENC = [
   '18',
   '-pix_fmt',
   'yuv420p',
+  '-threads',
+  FFMPEG_THREADS,
   '-an',
 ];
 const FINAL_ENC = [
@@ -361,6 +372,8 @@ const FINAL_ENC = [
   'yuv420p',
   '-r',
   String(FPS),
+  '-threads',
+  FFMPEG_THREADS,
   '-movflags',
   '+faststart',
 ];
@@ -1030,8 +1043,12 @@ async function concatMemories(opts: {
   const transitions: string[] = [];
   // setsar=1 BẮT BUỘC: filter `concat` đòi SAR khớp tuyệt đối giữa các nhánh — segment cắt từ
   // video gốc có thể mang SAR lẻ kiểu 4907:4906 (scale giữ tỉ lệ), còn color source là 1:1.
+  // setpts=PTS-STARTPTS: input được đưa vào với -itsoffset = mốc timeline của đoạn
+  // (xem phần args bên dưới) nên phải kéo về 0 trước khi vào xfade/concat.
   segs.forEach((_, i) =>
-    parts.push(`[${i}:v]fps=${FPS},settb=AVTB,setsar=1,format=yuv420p[s${i}]`),
+    parts.push(
+      `[${i}:v]setpts=PTS-STARTPTS,fps=${FPS},settb=AVTB,setsar=1,format=yuv420p[s${i}]`,
+    ),
   );
 
   let uid = 0;
@@ -1047,9 +1064,12 @@ async function concatMemories(opts: {
   // Bất biến: chuỗi `prev` dài đúng T + extra(join sắp tới); T = ranh giới timeline hiện tại.
   let prev = '[s0]';
   let T = segs[0].durationS;
+  // Mốc timeline mà đoạn i bắt đầu được dùng — cho -itsoffset bên dưới.
+  const starts: number[] = [0];
   for (let i = 1; i < segs.length; i++) {
     const j = joins[i - 1];
     const d = segs[i].durationS;
+    starts.push(T);
     if (j.type === 'cut') {
       const outL = lbl('c');
       parts.push(`${prev}[s${i}]concat=n=2:v=1:a=0${CFR}${outL}`);
@@ -1095,8 +1115,21 @@ async function concatMemories(opts: {
     `${prev}fade=t=in:st=0:d=0.5,fade=t=out:st=${Math.max(0, totalDur - 0.8).toFixed(2)}:d=0.8[v]`,
   );
 
+  // RAM của bước ghép (đo 2026-09-17, ffmpeg 7.0.2 Linux, video 6 đoạn 1080x1920):
+  // mặc định 1.8GB → Render 2GB OOM-kill ngay ở stage 'music'. Nguyên nhân không
+  // phải hiệu ứng: ffmpeg đọc và giải mã CẢ 6 đoạn song song từ giây 0 (pts đều
+  // bắt đầu ở 0 nên đoạn nào cũng "cũ nhất"), frame của đoạn chưa tới lượt nằm
+  // chờ trong graph — ép luồng chỉ làm encode chậm hơn và hàng đợi dài hơn (2.1GB).
+  //   · -itsoffset = mốc timeline thật của đoạn → scheduler chỉ kéo đoạn i khi
+  //     timeline chạm tới nó (setpts=PTS-STARTPTS ở đầu chuỗi kéo pts về 0 lại).
+  //   · -threads 1 cho decoder: mỗi decoder h264 đa luồng giữ ~60MB frame pool,
+  //     6 đoạn = ~370MB; giải mã 1 luồng vẫn nhanh hơn encode nhiều lần.
+  // Cùng graph: 1.8GB → 1.3GB với mốc xấp xỉ; mốc chính xác bên dưới.
   const args = ['-y'];
-  for (const s of segs) args.push('-i', s.file);
+  segs.forEach((s, i) => {
+    if (starts[i] > 0) args.push('-itsoffset', starts[i].toFixed(3));
+    args.push('-threads', '1', '-i', s.file);
+  });
 
   // ---------- audio ----------
   // Thiết kế màn 29: "The music fades under the voices in your clips." — tiếng nói trong
@@ -1147,6 +1180,8 @@ async function concatMemories(opts: {
   if (opts.musicPath) args.push('-stream_loop', '-1', '-i', opts.musicPath);
   for (const v of voices) args.push('-i', v.file);
   args.push(
+    '-filter_complex_threads',
+    '2',
     '-filter_complex',
     [...parts, ...audioParts].join(';'),
     '-map',

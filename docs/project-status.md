@@ -2231,7 +2231,15 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   rejects `concat` output feeding `xfade` ("inputs needs to be a constant
   frame rate"). `concatMemories` now re-stamps `fps=30,settb=AVTB` after
   each concat; verified by replaying the exact graph on both binaries.
-  Still open: safe production defaults in code, FAILED-marking of orphaned
+  Third finding (2026-09-18): the final mix alone peaked at **1.8GB** on
+  ffmpeg 7.0.2 Linux even with one ffmpeg — all segments start at pts 0,
+  so the scheduler decodes every input from t=0 and parks the frames in the
+  graph; capping threads only made the queue longer (2.1GB). Fix in
+  `concatMemories`: `-itsoffset <segment start>` per input +
+  `setpts=PTS-STARTPTS`, decoder `-threads 1`, x264 `-threads 4`
+  (`VIDEO_FFMPEG_THREADS`), `-filter_complex_threads 2` → 1.06GB for the
+  same graph, identical output length. Still open: safe production
+  defaults for render concurrency in code, FAILED-marking of orphaned
   PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
   long" state.
 - **App copy centralised (2026-08-18)**: every user-visible string in

@@ -56,6 +56,13 @@ Xong thì ghi lại hai URL Render cấp (dạng `https://nha-api.onrender.com`)
   `sharp` cho Linux glibc. Với 4 biến này một video 30s mất ~4 phút trên
   `standard`.
 
+  Riêng bước ghép cuối (stage `music`) từng cần **1.8GB cho một ffmpeg** trên
+  ffmpeg 7.0.2 Linux, đủ để OOM cả khi chỉ chạy một ffmpeg — ffmpeg giải mã cả
+  6 đoạn song song từ giây 0 và giữ frame của đoạn chưa tới lượt trong graph.
+  Từ 2026-09-18 engine tự xử: `-itsoffset` theo mốc timeline của từng đoạn,
+  decoder 1 luồng, x264 4 luồng (`VIDEO_FFMPEG_THREADS`, mặc định 4) → đo
+  1.06GB cùng graph. Không cần biến thêm cho việc này.
+
 Kiểm tra: `GET https://<api>/api` phải trả 200, và log khởi động phải có dòng
 `Using Cloudflare R2 bucket …` — không có nghĩa là nó đang ghi vào đĩa tạm của
 Render và ảnh sẽ mất sau mỗi lần deploy.
