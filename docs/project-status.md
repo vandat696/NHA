@@ -2241,7 +2241,16 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   each: 308–545MB measured on 7.0.2 Linux), then a concat-demuxer mux with
   `-c:v copy` plus the music/voice graph (29MB). Peak no longer grows with
   the scene count; same encode count, same 980-frame output. x264 threads
-  capped at 4 (`VIDEO_FFMPEG_THREADS`). Still open: safe production
+  capped at 4 (`VIDEO_FFMPEG_THREADS`). Fourth finding (2026-09-18): the
+  video was "boring" on production because it had no text — `findFont` only
+  looked in `C:\Windows\Fonts` (nothing on Linux → captions silently
+  dropped) and the Linux ffmpeg build has **no `drawtext` filter** at all
+  (no libharfbuzz). Fix: Noto Sans JP + Noto Sans bundled under
+  `apps/api/assets/fonts` (OFL, ~10MB), captions/cards rendered through
+  libass (`subtitles` filter with `fontsdir`, present in both builds),
+  intro SVG text pointed at the same fonts via `FONTCONFIG_PATH`, and the
+  service now warns when fonts are missing. Verified by replaying the
+  generated commands on the 7.0.2 Linux binary. Still open: safe production
   defaults for render concurrency in code, FAILED-marking of orphaned
   PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
   long" state.

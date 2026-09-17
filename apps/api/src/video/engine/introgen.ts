@@ -88,7 +88,8 @@ export const isIntroEnabled = (v: IntroTemplateId): boolean =>
   INTRO_TEMPLATES.some((t) => t.id === v);
 
 // V9: giảm rung film (±0.09%, 15Hz — bản cũ ±0.22% 30Hz rung quá nhiều)
-const CACHE_V = 9;
+// V10: chữ SVG dùng Noto Sans JP đóng gói (qua FONTCONFIG_PATH) thay font Windows
+const CACHE_V = 10;
 const ENC = [
   '-r',
   String(FPS),
@@ -104,7 +105,10 @@ const ENC = [
   FFMPEG_THREADS,
   '-an',
 ];
-const FONT_STACK = 'Yu Gothic, Meiryo, Segoe UI, sans-serif';
+// Noto đóng gói (assets/fonts, qua FONTCONFIG_PATH đặt ở videogen) đi trước để
+// Windows và Render vẽ cùng một chữ; Yu Gothic/Meiryo/Segoe chỉ còn là dự phòng.
+const FONT_STACK =
+  'Noto Sans JP, Noto Sans, Yu Gothic, Meiryo, Segoe UI, sans-serif';
 
 export type IntroCtx = {
   titleJa: string;

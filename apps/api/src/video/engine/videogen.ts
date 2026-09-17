@@ -47,7 +47,8 @@ export const tmpDir = TMP_DIR;
 export const FPS = 30;
 const SS = 3; // hệ số supersample cho zoompan (hạ xuống 2 nếu máy yếu)
 // V5: engine memories (KB tuyến tính cực nhẹ + static), crf segment 18, tpad video clip
-const CACHE_V = 5; // bump khi đổi thuật toán render → cache cũ tự bỏ
+// V6: chữ vẽ bằng libass (subtitles) + font Noto đóng gói thay drawtext + font Windows
+const CACHE_V = 6; // bump khi đổi thuật toán render → cache cũ tự bỏ
 
 export function ensureDirs() {
   for (const d of [OUT_DIR(), SEG_DIR(), TMP_DIR(), MUSIC_DIR()])
@@ -72,12 +73,42 @@ const STYLE_FILTER: Record<VideoStyle, string> = {
   kazoku: 'eq=brightness=0.05:saturation=1.16',
 };
 
-// ---- Font (Windows) — chữ Nhật trong video + fallback Latin/Việt ----
+// ---- Font — chữ Nhật trong video + Latin/Việt ----
+// Font ĐÓNG GÓI trong repo (apps/api/assets/fonts: Noto Sans JP + Noto Sans, OFL)
+// đi trước, font hệ thống Windows chỉ là dự phòng. Trước 2026-09-18 chỉ tìm
+// C:\Windows\Fonts nên trên Render (Linux) không có font nào → drawTextBlock
+// lặng lẽ bỏ mọi caption, còn SVG mở đầu/kết rơi về font hệ thống không có
+// chữ Nhật. Tính từ __dirname (dist/video/engine hay src/video/engine) chứ
+// không từ cwd: trên Render startCommand chạy từ gốc repo, cwd ≠ apps/api.
 export type FontSet = { vn: string | null; jp: string | null };
 
+export const FONT_DIR = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'assets',
+  'fonts',
+);
+
+// sharp/librsvg vẽ chữ SVG qua fontconfig; fontconfig chỉ thấy font đóng gói
+// nếu được trỏ tới fonts.conf trong thư mục đó. Biến phải có trước lần vẽ chữ
+// đầu tiên (fontconfig khởi tạo lười), nên đặt ngay khi module này được nạp —
+// introgen import từ đây. Biến đặt sẵn ngoài luôn thắng.
+if (
+  !process.env.FONTCONFIG_PATH &&
+  fs.existsSync(path.join(FONT_DIR, 'fonts.conf'))
+) {
+  process.env.FONTCONFIG_PATH = FONT_DIR;
+}
+
 export function findFont(kind: 'vn' | 'jp'): string | null {
-  const dir = 'C:\\Windows\\Fonts';
-  const cands =
+  const bundled =
+    kind === 'jp'
+      ? [path.join(FONT_DIR, 'NotoSansJP-Bold.otf')]
+      : [path.join(FONT_DIR, 'NotoSans-Bold.ttf')];
+  const win = 'C:\\Windows\\Fonts';
+  const system =
     kind === 'jp'
       ? [
           'YuGothB.ttc',
@@ -88,8 +119,7 @@ export function findFont(kind: 'vn' | 'jp'): string | null {
           'msgothic.ttc',
         ]
       : ['segoeuib.ttf', 'arialbd.ttf', 'segoeui.ttf', 'arial.ttf'];
-  for (const f of cands) {
-    const p = path.join(dir, f);
+  for (const p of [...bundled, ...system.map((f) => path.join(win, f))]) {
     if (fs.existsSync(p)) return p;
   }
   return null;
@@ -139,33 +169,97 @@ function ffPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:');
 }
 
-// drawtext dùng TEXTFILE (UTF-8) để né toàn bộ vấn đề escape tiếng Việt/Nhật
-function writeTextFile(content: string): string {
-  const p = path.join(
-    TMP_DIR(),
-    `txt_${crypto.randomBytes(4).toString('hex')}.txt`,
-  );
-  fs.writeFileSync(p, content.replace(/\r?\n/g, ' '), 'utf8');
-  return p;
+// ---- Chữ trên video: file ASS + filter `subtitles` (libass) ----
+// VÌ SAO KHÔNG drawtext: bản ffmpeg Linux mà ffmpeg-static tải cho Render
+// (7.0.2 static) build không có libharfbuzz nên KHÔNG có filter drawtext
+// ("Filter not found"); bản Windows 6.1.1 thì có. libass có ở cả hai bản.
+// Phát hiện 2026-09-18 — trước đó Render không sập chỉ vì thiếu font nên
+// drawtext chưa bao giờ được đưa vào graph (caption lặng lẽ biến mất).
+// Font lấy từ FONT_DIR qua `fontsdir`, không phụ thuộc font hệ thống.
+
+/** 'white' | '#rrggbb' + độ ĐỤC 0..1 → &HAABBGGRR của ASS (AA: 00 đục, FF trong) */
+function assColor(color: string, opacity = 1): string {
+  const named: Record<string, string> = { white: 'ffffff', black: '000000' };
+  const hex = (named[color.toLowerCase()] ?? color.replace('#', ''))
+    .padEnd(6, '0')
+    .slice(0, 6);
+  const rr = hex.slice(0, 2);
+  const gg = hex.slice(2, 4);
+  const bb = hex.slice(4, 6);
+  const aa = Math.round((1 - opacity) * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return `&H${aa}${bb}${gg}${rr}`.toUpperCase();
 }
 
-function drawText(opts: {
+/** Tên family mà libass sẽ tìm trong fontsdir/hệ thống, suy từ file font đã chọn */
+function assFamily(fontPath: string): string {
+  const b = path.basename(fontPath).toLowerCase();
+  if (b.startsWith('notosansjp')) return 'Noto Sans JP';
+  if (b.startsWith('notosans')) return 'Noto Sans';
+  if (b.startsWith('yugoth')) return 'Yu Gothic';
+  if (b.startsWith('meiryo')) return 'Meiryo';
+  if (b.startsWith('msgothic')) return 'MS Gothic';
+  if (b.startsWith('segoeui')) return 'Segoe UI';
+  if (b.startsWith('arial')) return 'Arial';
+  return 'sans-serif';
+}
+
+/** Ký tự điều khiển của ASS ({}) và xuống dòng không được lọt vào text */
+function assEscape(s: string): string {
+  return s.replace(/\{/g, '｛').replace(/\}/g, '｝').replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Ghi file ASS gồm các dòng đã wrap, mỗi dòng một event neo tại toạ độ tính sẵn
+ * (PlayRes = kích thước khung nên toạ độ là pixel). Trả về filter `subtitles`.
+ *   box  → BorderStyle 3: hộp đen 38% sau chữ, đệm 16px (thay box=1 của drawtext)
+ *   !box → BorderStyle 1: viền đen 75% dày borderw (thay borderw của drawtext)
+ */
+function subtitlesFilter(opts: {
   font: string;
-  text: string;
+  lines: { text: string; x: number; y: number; anchor: 2 | 8 }[];
   fontsize: number;
   color: string;
-  y: string;
+  W: number;
+  H: number;
   box?: boolean;
   borderw?: number;
 }): string {
-  const tf = writeTextFile(opts.text);
-  return (
-    `drawtext=fontfile='${ffPath(opts.font)}':textfile='${ffPath(tf)}'` +
-    `:fontsize=${opts.fontsize}:fontcolor=${opts.color}` +
-    `:borderw=${opts.borderw ?? 2}:bordercolor=black@0.75` +
-    (opts.box ? `:box=1:boxcolor=black@0.38:boxborderw=16` : '') +
-    `:x=(w-text_w)/2:y=${opts.y}`
+  const primary = assColor(opts.color, 1);
+  const outline = opts.box ? assColor('black', 0.38) : assColor('black', 0.75);
+  const borderStyle = opts.box ? 3 : 1;
+  const outlineW = opts.box ? 16 : (opts.borderw ?? 2);
+  const style =
+    `Style: T,${assFamily(opts.font)},${opts.fontsize},${primary},${primary},` +
+    `${outline},${outline},-1,0,0,0,100,100,0,0,${borderStyle},${outlineW},0,2,0,0,0,1`;
+  const events = opts.lines.map(
+    (l) =>
+      `Dialogue: 0,0:00:00.00,9:59:59.99,T,,0,0,0,,{\\an${l.anchor}\\pos(${l.x},${l.y})}${assEscape(l.text)}`,
   );
+  const ass = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${opts.W}`,
+    `PlayResY: ${opts.H}`,
+    'WrapStyle: 2',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    style,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    ...events,
+    '',
+  ].join('\n');
+  const p = path.join(
+    TMP_DIR(),
+    `sub_${crypto.randomBytes(4).toString('hex')}.ass`,
+  );
+  fs.writeFileSync(p, ass, 'utf8');
+  return `subtitles=filename='${ffPath(p)}':fontsdir='${ffPath(FONT_DIR)}'`;
 }
 
 // ---- Xuống dòng: drawtext KHÔNG tự wrap, lại phải xử lý tiếng Nhật (không có dấu cách) ----
@@ -253,13 +347,15 @@ export function wrapLines(
   return lines;
 }
 
-// Vẽ text nhiều dòng, căn giữa quanh yCenterPx (hoặc neo đáy yBottomPx)
+// Vẽ text nhiều dòng, căn giữa quanh yCenterPx (hoặc neo đáy yBottomPx).
+// Trả về 0 hoặc 1 filter `subtitles` để nối vào chuỗi -vf/-filter_complex.
 function drawTextBlock(opts: {
   fonts: FontSet;
   text: string;
   fontsize: number;
   color: string;
   W: number;
+  H: number;
   yCenterPx?: number;
   yBottomPx?: number;
   box?: boolean;
@@ -274,29 +370,37 @@ function drawTextBlock(opts: {
     maxUnitsFor(opts.W, opts.fontsize),
     opts.maxLines ?? 3,
   );
+  if (lines.length === 0) return [];
   const lineH = Math.round(opts.fontsize * 1.3);
-  return lines.map((line, i) => {
-    let y: string;
+  const cx = Math.round(opts.W / 2);
+  const placed = lines.map((line, i) => {
     if (opts.yBottomPx !== undefined) {
-      y = String(
-        opts.yBottomPx - (lines.length - 1 - i) * lineH - opts.fontsize,
-      );
-    } else {
-      const startY = Math.round(
-        (opts.yCenterPx ?? 0) - (lines.length * lineH) / 2,
-      );
-      y = String(startY + i * lineH);
+      // neo ĐÁY từng dòng (\an2 = bottom-center): dòng cuối chạm yBottomPx
+      return {
+        text: line,
+        x: cx,
+        y: opts.yBottomPx - (lines.length - 1 - i) * lineH,
+        anchor: 2 as const,
+      };
     }
-    return drawText({
+    // neo ĐỈNH từng dòng (\an8 = top-center), cả khối căn giữa quanh yCenterPx
+    const startY = Math.round(
+      (opts.yCenterPx ?? 0) - (lines.length * lineH) / 2,
+    );
+    return { text: line, x: cx, y: startY + i * lineH, anchor: 8 as const };
+  });
+  return [
+    subtitlesFilter({
       font,
-      text: line,
+      lines: placed,
       fontsize: opts.fontsize,
       color: opts.color,
-      y,
+      W: opts.W,
+      H: opts.H,
       box: opts.box,
       borderw: opts.borderw,
-    });
-  });
+    }),
+  ];
 }
 
 function captionSize(aspect: Aspect): number {
@@ -521,6 +625,7 @@ export async function renderKenBurns(opts: {
     fontsize: captionSize(opts.aspect),
     color: 'white',
     W,
+    H,
     yBottomPx: captionBottom(opts.profile, H),
     box: true,
     maxLines: 2,
@@ -621,41 +726,49 @@ export async function renderAiPlaceholder(opts: {
     `drawbox=y=(ih-${bandH})/2:h=${bandH}:color=black@0.55:t=fill`,
     ...(jp
       ? [
-          drawText({
-            font: jp,
+          ...drawTextBlock({
+            fonts: opts.fonts,
             text: 'API待ち',
             fontsize: mainSize,
             color: '#ffd23f',
-            y: `(h-${bandH})/2+${Math.round(bandH * 0.12)}`,
+            W,
+            H,
+            yCenterPx: Math.round(
+              (H - bandH) / 2 + bandH * 0.12 + mainSize / 2,
+            ),
             borderw: 5,
+            maxLines: 1,
           }),
-          drawText({
-            font: jp,
+          ...drawTextBlock({
+            fonts: opts.fonts,
             text: 'AIアニメーション生成準備中…',
             fontsize: subSize,
             color: 'white',
-            y: `(h+${bandH})/2-${Math.round(subSize * 1.6)}`,
+            W,
+            H,
+            yCenterPx: Math.round((H + bandH) / 2 - subSize * 1.1),
             borderw: 3,
+            maxLines: 1,
           }),
         ]
-      : opts.fonts.vn
-        ? [
-            drawText({
-              font: opts.fonts.vn,
-              text: 'DANG CHO API (AI animate)',
-              fontsize: subSize,
-              color: '#ffd23f',
-              y: '(h-text_h)/2',
-              borderw: 4,
-            }),
-          ]
-        : []),
+      : drawTextBlock({
+          fonts: opts.fonts,
+          text: 'DANG CHO API (AI animate)',
+          fontsize: subSize,
+          color: '#ffd23f',
+          W,
+          H,
+          yCenterPx: Math.round(H / 2),
+          borderw: 4,
+          maxLines: 1,
+        })),
     ...drawTextBlock({
       fonts: opts.fonts,
       text: opts.scene.caption_ja,
       fontsize: captionSize(opts.aspect),
       color: 'white',
       W,
+      H,
       yBottomPx: captionBottom(opts.profile, H),
       box: true,
       maxLines: 2,
@@ -713,6 +826,7 @@ export async function renderVideoClip(opts: {
       fontsize: captionSize(opts.aspect),
       color: 'white',
       W,
+      H,
       yBottomPx: captionBottom(opts.profile, H),
       box: true,
       maxLines: 2,
@@ -823,6 +937,7 @@ export async function renderCard(opts: {
       fontsize: titleSize,
       color: opts.palette.text_on_dark,
       W,
+      H,
       yCenterPx: Math.round(H * 0.44),
       borderw: 3,
       maxLines: 3,
@@ -834,6 +949,7 @@ export async function renderCard(opts: {
           fontsize: Math.round(subSize * 1.15),
           color: opts.palette.accent,
           W,
+          H,
           yCenterPx: Math.round(H * 0.66),
           borderw: 2,
           maxLines: 2,
@@ -845,6 +961,7 @@ export async function renderCard(opts: {
       fontsize: subSize,
       color: opts.palette.accent,
       W,
+      H,
       yCenterPx: Math.round(H * (ded ? 0.78 : 0.66)),
       borderw: 2,
       maxLines: 2,

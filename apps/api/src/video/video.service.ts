@@ -479,6 +479,13 @@ export class VideoService {
 
     ensureDirs();
     const fonts = loadFonts();
+    // Thiếu font thì engine bỏ chữ chứ không fail — phải nói ra ở đây, nếu không
+    // video "không có phụ đề" trông như lỗi thiết kế (đã xảy ra trên Render 09-17).
+    if (!fonts.jp || !fonts.vn) {
+      this.logger.warn(
+        `job ${jobId}: thiếu font (jp=${fonts.jp ?? 'null'}, vn=${fonts.vn ?? 'null'}) — caption/card sẽ không có chữ. Kiểm tra apps/api/assets/fonts.`,
+      );
+    }
     const aspect: Aspect =
       options.aspect === 'landscape' ? 'landscape' : 'portrait';
     const quick = job.mode === 'quick';

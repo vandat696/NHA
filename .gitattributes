@@ -5,3 +5,7 @@
 # Windows batch scripts require CRLF to run
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Font đóng gói cho video (apps/api/assets/fonts) — nhị phân, không đổi EOL
+*.otf binary
+*.ttf binary

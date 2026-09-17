@@ -118,6 +118,13 @@ trình duyệt chặn mọi request và app trông như "server không phản h�
    ghép (`Could not open encoder before EOF`). Muốn tái hiện lỗi Linux từ
    Windows: tải `ffmpeg-linux-x64` từ release `b6.1.1` của
    `eugeneware/ffmpeg-static` và chạy qua WSL.
+6. **Bản ffmpeg Linux đó KHÔNG có filter `drawtext`** (build thiếu libharfbuzz),
+   và Render không có font Nhật. Hậu quả tới 2026-09-18: video production
+   không có phụ đề, tiêu đề mở đầu rơi về font hệ thống — trông "chán" so với
+   render ở máy dev Windows. Engine giờ đóng gói Noto Sans JP + Noto Sans
+   (`apps/api/assets/fonts`, OFL), vẽ chữ bằng libass (`subtitles` +
+   `fontsdir`, có ở cả hai bản ffmpeg) thay drawtext, và trỏ sharp/librsvg
+   tới cùng bộ font qua `FONTCONFIG_PATH`. Không cài thêm gì trên Render.
 
 ## HTTPS
 
