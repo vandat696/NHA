@@ -11,13 +11,13 @@ sinh thumbnail, `MediaService` trích ảnh xem trước. Đó là tiến trình
 không phải serverless function — Vercel không phải chỗ cho nó. AI là FastAPI
 (Python), cũng vậy.
 
-| Thành phần | Chỗ chạy | Ghi chú |
-|---|---|---|
-| `apps/mobile` (Expo web) | Vercel | tĩnh, `expo export` |
-| `apps/api` (NestJS) | Render, Node 24 | ffmpeg đi kèm trong `node_modules` |
-| `apps/ai` (FastAPI) | Render, Python 3.12 | chỗ DUY NHẤT gọi OpenAI |
-| Postgres | Neon | đã có sẵn |
-| Ảnh/video | Cloudflare R2 | đã có sẵn, bucket **private** |
+| Thành phần               | Chỗ chạy            | Ghi chú                            |
+| ------------------------ | ------------------- | ---------------------------------- |
+| `apps/mobile` (Expo web) | Vercel              | tĩnh, `expo export`                |
+| `apps/api` (NestJS)      | Render, Node 24     | ffmpeg đi kèm trong `node_modules` |
+| `apps/ai` (FastAPI)      | Render, Python 3.12 | chỗ DUY NHẤT gọi OpenAI            |
+| Postgres                 | Neon                | đã có sẵn                          |
+| Ảnh/video                | Cloudflare R2       | đã có sẵn, bucket **private**      |
 
 `apps/web` (Next.js) vẫn là scaffold rỗng — **không deploy nó**, nó không phải
 giao diện của sản phẩm.
@@ -40,6 +40,21 @@ Xong thì ghi lại hai URL Render cấp (dạng `https://nha-api.onrender.com`)
 - `plan: starter` (512MB) là mức tối thiểu. Render video có thể OOM ở mức này —
   nâng `standard` (2GB) nếu gặp. Gói **free ngủ sau 15 phút** (lần gọi đầu chờ
   ~50s) nên đừng dùng để diễn demo.
+- **Bốn biến bắt buộc cho `nha-api` để render video không OOM** (đặt tay
+  trong dashboard, sự cố 2026-09-17: mọi job chết ở 3% với "Ran out of
+  memory (used over 2GB)" kể cả trên `standard`):
+
+      VIDEO_RENDER_CONCURRENCY=1
+      VIDEO_MAX_CONCURRENT_RENDERS=1
+      UV_THREADPOOL_SIZE=4
+      MALLOC_ARENA_MAX=2
+
+  Lý do: trong container, `os.cpus()` trả số nhân của **máy vật lý** Render
+  (hàng chục), không phải 1 CPU của gói, nên mặc định trong code tự bật tới
+  5 ffmpeg song song (đo local: ~550MB mỗi ffmpeg ở bước cảnh, 1.2GB ở bước
+  ghép) và nới threadpool lên 16. `MALLOC_ARENA_MAX=2` là khuyến nghị của
+  `sharp` cho Linux glibc. Với 4 biến này một video 30s mất ~4 phút trên
+  `standard`.
 
 Kiểm tra: `GET https://<api>/api` phải trả 200, và log khởi động phải có dòng
 `Using Cloudflare R2 bucket …` — không có nghĩa là nó đang ghi vào đĩa tạm của
@@ -85,6 +100,14 @@ trình duyệt chặn mọi request và app trông như "server không phản h�
    Metro không tính giá trị biến. Vì thế script `export` có sẵn `--clear`.
    Đừng bỏ cờ đó đi: hậu quả là một bản deploy trông thành công nhưng gọi API
    vào localhost của người xem, và không có lỗi build nào chỉ ra điều đó.
+5. **`ffmpeg-static` 5.3.0 tải ffmpeg 6.1.1 cho Windows nhưng 7.0.2 cho
+   Linux.** Cùng một phiên bản npm, hai binary khác phiên bản lớn — render
+   chạy ở máy dev không có nghĩa là chạy trên Render. Đã dính 2026-09-17:
+   ffmpeg 7 đòi đầu vào `xfade` có frame rate cố định, đầu ra `concat` thì
+   không, nên mọi video có cut/counter-slide đứng trước xfade fail ở bước
+   ghép (`Could not open encoder before EOF`). Muốn tái hiện lỗi Linux từ
+   Windows: tải `ffmpeg-linux-x64` từ release `b6.1.1` của
+   `eugeneware/ffmpeg-static` và chạy qua WSL.
 
 ## HTTPS
 

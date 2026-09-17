@@ -1037,6 +1037,13 @@ async function concatMemories(opts: {
   let uid = 0;
   const lbl = (p: string) => `[${p}${uid++}]`;
 
+  // Đầu ra của `concat` KHÔNG mang frame rate (1/0). ffmpeg 6.1 (bản Windows của
+  // ffmpeg-static) bỏ qua, nhưng ffmpeg 7.0 (bản Linux cùng gói — Render) từ chối
+  // ngay khi chuỗi đó đi vào `xfade`: "The inputs needs to be a constant frame
+  // rate; current rate of 1/0 is invalid" → cả video 0 frame (sự cố 2026-09-17).
+  // Gắn lại CFR sau mỗi concat; với nguồn đã 30fps thì đây là no-op về nội dung.
+  const CFR = `,fps=${FPS},settb=AVTB`;
+
   // Bất biến: chuỗi `prev` dài đúng T + extra(join sắp tới); T = ranh giới timeline hiện tại.
   let prev = '[s0]';
   let T = segs[0].durationS;
@@ -1045,7 +1052,7 @@ async function concatMemories(opts: {
     const d = segs[i].durationS;
     if (j.type === 'cut') {
       const outL = lbl('c');
-      parts.push(`${prev}[s${i}]concat=n=2:v=1:a=0${outL}`);
+      parts.push(`${prev}[s${i}]concat=n=2:v=1:a=0${CFR}${outL}`);
       prev = outL;
     } else if (j.type === 'counterslide') {
       const D = j.dur;
@@ -1067,7 +1074,7 @@ async function concatMemories(opts: {
       const Tclip = counterSlideGraph(parts, Ltail, Rhead, D, dir, W, H, lbl);
       const [half, outL] = [lbl('cs'), lbl('cs')];
       parts.push(`${Lmain}${Tclip}concat=n=2:v=1:a=0${half}`);
-      parts.push(`${half}${Rmain}concat=n=2:v=1:a=0${outL}`);
+      parts.push(`${half}${Rmain}concat=n=2:v=1:a=0${CFR}${outL}`);
       prev = outL;
       transitions.push(`counterslide(${dir > 0 ? 'phải' : 'trái'})`);
       T += d;

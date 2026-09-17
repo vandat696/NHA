@@ -2221,6 +2221,19 @@ relationshipType, status, expiresAt }`. `Family.inviteCode` stays as the
   MIME type is trusted for now (no content sniffing) — revisit before
   release, together with automated tests for the post/media
   authorization matrix.
+- **Video render on Render: OOM + ffmpeg 7 xfade (2026-09-17)**: every
+  VideoJob since 09-15 sat at PROCESSING 3% forever — the API process was
+  OOM-killed (`os.cpus()` in the container reports the host's cores, so the
+  engine spawned 5 ffmpeg at ~550MB each) and nothing marked the job
+  FAILED. Fixed operationally with four env vars on `nha-api` (see
+  `docs/04-devops/deploy.md`). That exposed a second, real bug: the Linux
+  build of `ffmpeg-static` is ffmpeg **7.0.2** (Windows is 6.1.1) and 7.x
+  rejects `concat` output feeding `xfade` ("inputs needs to be a constant
+  frame rate"). `concatMemories` now re-stamps `fps=30,settb=AVTB` after
+  each concat; verified by replaying the exact graph on both binaries.
+  Still open: safe production defaults in code, FAILED-marking of orphaned
+  PROCESSING jobs on boot, `ensureTrack` atomic write, mobile "taking too
+  long" state.
 - **App copy centralised (2026-08-18)**: every user-visible string in
   `apps/mobile` — accessibility labels included — moved to
   `src/locales/en.json` and read through `t()` (`i18next` +
